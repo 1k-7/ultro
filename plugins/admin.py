@@ -2,18 +2,8 @@ import asyncio
 import time
 from pyrogram import filters, enums
 from pyrogram.types import ChatPermissions, ChatPrivileges
-from utils import ultroid_cmd, eor, get_user_id
-
-# --- HELPER: Parse Time String (1m, 2h, 1d) ---
-def parse_time(s):
-    if not s: return 0
-    multipliers = {'m': 60, 'h': 3600, 'd': 86400, 'w': 604800}
-    try:
-        return int(s[:-1]) * multipliers.get(s[-1], 1)
-    except:
-        return 0
-
-# --- BAN / UNBAN / KICK / MUTE ---
+from pyrogram.errors import ChannelInvalid, ChatAdminRequired
+from utils import ultroid_cmd, eor, get_user_id, ban_time
 
 @ultroid_cmd("ban", full_sudo=True)
 async def ban_handler(client, message):
@@ -43,21 +33,55 @@ async def kick_handler(client, message):
         await eor(message, f"🦶 **Kicked** `{user_id}`")
     except Exception as e: await eor(message, f"Error: {e}")
 
+@ultroid_cmd("mute", full_sudo=True)
+async def mute_handler(client, message):
+    user_id = await get_user_id(message)
+    if not user_id: return await eor(message, "Reply to a user.")
+    try:
+        await client.restrict_chat_member(
+            message.chat.id, user_id,
+            ChatPermissions(can_send_messages=False)
+        )
+        await eor(message, f"🔇 **Muted** `{user_id}`")
+    except ChannelInvalid:
+        await eor(message, "❌ **Error:** Basic Groups do not support Mute.\nConvert this group to a Supergroup.")
+    except Exception as e:
+        await eor(message, f"Error: {e}")
+
+@ultroid_cmd("unmute", full_sudo=True)
+async def unmute_handler(client, message):
+    user_id = await get_user_id(message)
+    if not user_id: return await eor(message, "Reply to a user.")
+    try:
+        # Restore defaults (Adjust as needed)
+        await client.restrict_chat_member(
+            message.chat.id, user_id,
+            ChatPermissions(
+                can_send_messages=True,
+                can_send_media_messages=True,
+                can_send_other_messages=True,
+                can_add_web_page_previews=True,
+                can_send_polls=True,
+                can_invite_users=True
+            )
+        )
+        await eor(message, f"🔊 **Unmuted** `{user_id}`")
+    except ChannelInvalid:
+        await eor(message, "❌ **Error:** Basic Groups do not support Unmute.")
+    except Exception as e:
+        await eor(message, f"Error: {e}")
+
 @ultroid_cmd("tban", full_sudo=True)
 async def tban_handler(client, message):
     if len(message.command) < 2: return await eor(message, "Usage: .tban 1h (reply)")
-    time_str = message.command[1]
-    seconds = parse_time(time_str)
+    seconds = ban_time(message.command[1])
     user_id = await get_user_id(message)
     if not user_id: return await eor(message, "Reply to a user.")
-    
     try:
         until = time.time() + seconds
         await client.ban_chat_member(message.chat.id, user_id, until_date=until)
-        await eor(message, f"🚫 **Temp Banned** `{user_id}` for `{time_str}`")
+        await eor(message, f"🚫 **Temp Banned** `{user_id}` for `{message.command[1]}`")
     except Exception as e: await eor(message, f"Error: {e}")
-
-# --- PROMOTE / DEMOTE ---
 
 @ultroid_cmd("promote", full_sudo=True)
 async def promote_handler(client, message):
@@ -86,12 +110,10 @@ async def demote_handler(client, message):
     try:
         await client.promote_chat_member(
             message.chat.id, user_id,
-            privileges=ChatPrivileges(can_manage_chat=False) # Revoke all
+            privileges=ChatPrivileges(can_manage_chat=False)
         )
         await eor(message, f"⬇️ **Demoted** `{user_id}`")
     except Exception as e: await eor(message, f"Error: {e}")
-
-# --- PIN / UNPIN / LIST PINNED ---
 
 @ultroid_cmd("pin", full_sudo=True)
 async def pin_handler(client, message):
@@ -111,16 +133,6 @@ async def unpin_handler(client, message):
     await message.reply_to_message.unpin()
     await eor(message, "Unpinned.")
 
-@ultroid_cmd("pinned", full_sudo=True)
-async def get_pinned(client, message):
-    chat = await client.get_chat(message.chat.id)
-    if chat.pinned_message:
-        await eor(message, f"📌 **Pinned Message:** [Click Here]({chat.pinned_message.link})")
-    else:
-        await eor(message, "No pinned message found.")
-
-# --- PURGE TOOLS ---
-
 @ultroid_cmd("purge", full_sudo=True)
 async def purge_handler(client, message):
     if not message.reply_to_message: return await eor(message, "Reply to start purging.")
@@ -133,16 +145,30 @@ async def purge_handler(client, message):
         await tmp.delete()
     except Exception as e: await client.send_message(message.chat.id, f"Error: {e}")
 
-@ultroid_cmd("purgeme", full_sudo=True)
-async def purgeme_handler(client, message):
-    count = int(message.command[1]) if len(message.command) > 1 and message.command[1].isdigit() else 10
-    await message.delete()
-    my_msgs = []
-    async for msg in client.get_chat_history(message.chat.id, limit=count):
-        if msg.from_user and msg.from_user.is_self:
-            my_msgs.append(msg.id)
-    if my_msgs:
-        await client.delete_messages(message.chat.id, my_msgs)
-        tmp = await client.send_message(message.chat.id, f"✅ Purged {len(my_msgs)} of my messages.")
-        await asyncio.sleep(3)
-        await tmp.delete()
+@ultroid_cmd("zombies", full_sudo=True)
+async def zombies_handler(client, message):
+    """ .zombies: Clean deleted accounts. """
+    if message.chat.type == enums.ChatType.PRIVATE: 
+        return await eor(message, "Groups only.")
+    
+    status = await eor(message, "<code>Searching for zombies...</code>")
+    deleted = []
+    
+    # Iterate through members
+    async for member in client.get_chat_members(message.chat.id):
+        if member.user.is_deleted:
+            deleted.append(member.user.id)
+    
+    if not deleted: 
+        return await status.edit("✅ No zombies found.")
+    
+    await status.edit(f"Found {len(deleted)} zombies. Cleaning...")
+    count = 0
+    for user_id in deleted:
+        try:
+            await client.ban_chat_member(message.chat.id, user_id)
+            count += 1
+            await asyncio.sleep(0.2)
+        except: pass
+    
+    await status.edit(f"✅ **Cleaned {count} Zombies!**")

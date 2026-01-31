@@ -1,101 +1,68 @@
 import os
 import asyncio
 from PIL import Image
-from pyrogram.errors import StickersetInvalid, PeerIdInvalid
-from utils import ultroid_cmd, eor
+from utils import ultroid_cmd, eor, resize_photo_sticker, get_response
+
+STICKER_BOT = "Stickers"
 
 @ultroid_cmd("kang")
 async def kang_handler(client, message):
-    """
-    Usage: Reply to an image/sticker with .kang
-    """
     reply = message.reply_to_message
-    if not reply:
-        return await eor(message, "Reply to a sticker or image.")
-
+    if not reply: return await eor(message, "Reply to a sticker or image.")
     status = await eor(message, "<code>Kanging...</code>")
     
-    # 1. Determine Type (Static vs Animated)
-    is_animated = False
-    if reply.sticker:
-        is_animated = reply.sticker.is_animated
-        if reply.sticker.is_video:
-            return await status.edit("Video stickers not supported yet.")
-
-    # 2. Download Media
+    # 1. Process File
     file_path = await reply.download()
-    final_file = file_path
-
-    # 3. Convert Image (If Static)
-    if not is_animated:
-        try:
-            img = Image.open(file_path)
-            if img.mode != "RGB":
-                img = img.convert("RGB")
-            
-            # Resize logic (Ultroid Style: 512px max dimension)
-            scale = 512 / max(img.width, img.height)
-            new_size = (int(img.width * scale), int(img.height * scale))
-            img = img.resize(new_size, Image.LANCZOS)
-            
-            final_file = file_path + ".png"
-            img.save(final_file, "PNG")
-        except Exception as e:
-            if os.path.exists(file_path): os.remove(file_path)
-            return await status.edit(f"❌ Image Error: {e}")
-
-    # 4. Prepare Pack Details
-    # CRITICAL FIX: Explicitly get 'me' to avoid identity errors
+    if not reply.sticker or not reply.sticker.is_animated:
+        if resize_photo_sticker(file_path, "sticker.png"):
+            file_path = "sticker.png"
+    
+    # 2. Pack Info
     me = await client.get_me()
     pack_num = 1
-    
-    # Handle Username (Fallback to ID if None)
-    user_ref = me.username if me.username else str(me.id)
-    name_ref = me.first_name if me.first_name else "User"
+    user_name = me.username if me.username else me.first_name
+    pack_name = f"kang_{me.id}_{pack_num}"
+    pack_title = f"{me.first_name}'s Kang V{pack_num}"
+    emoji = message.command[1] if len(message.command) > 1 else "🤔"
+    if reply.sticker and reply.sticker.emoji: emoji = reply.sticker.emoji
 
-    if is_animated:
-        pack_name = f"kang_anim_{me.id}_{pack_num}"
-        pack_title = f"{name_ref}'s Animated V{pack_num}"
-    else:
-        pack_name = f"kang_{me.id}_{pack_num}"
-        pack_title = f"{name_ref}'s Kang V{pack_num}"
-
-    # Get Emoji
-    emoji = "🤔"
-    if len(message.command) > 1:
-        emoji = message.command[1]
-    elif reply.sticker and reply.sticker.emoji:
-        emoji = reply.sticker.emoji
-
-    # 5. Add Sticker (Retry Logic)
+    # 3. Automate @Stickers
     try:
-        # Try adding to existing pack
-        # Only requires (short_name, file, emoji)
-        await client.add_sticker_to_set(pack_name, final_file, emoji)
-    
-    except StickersetInvalid:
-        # Pack doesn't exist -> Create New
-        try:
-            # CRITICAL FIX: Use "me" as user_id to bypass resolution errors
-            await client.create_sticker_set(
-                "me", 
-                pack_name, 
-                pack_title, 
-                final_file, 
-                emoji
-            )
-        except Exception as e:
-            return await status.edit(f"❌ <b>Creation Error:</b>\n{e}")
-            
-    except Exception as e:
-        if "STICKER_PACKS_TOO_MUCH" in str(e):
-             return await status.edit("❌ Pack is full! (Switching packs not implemented yet)")
-        return await status.edit(f"❌ <b>Error:</b>\n{e}")
+        await client.send_message(STICKER_BOT, "/cancel")
+        await asyncio.sleep(0.5)
+        await client.send_message(STICKER_BOT, "/addsticker")
         
+        # Select Pack
+        await asyncio.sleep(0.5)
+        await client.send_message(STICKER_BOT, pack_name)
+        response = await get_response(client, STICKER_BOT)
+        
+        # If Pack Invalid -> Create New
+        if response and "Invalid set" in response.text:
+            await client.send_message(STICKER_BOT, "/newpack")
+            await asyncio.sleep(0.5)
+            await client.send_message(STICKER_BOT, pack_title)
+            await asyncio.sleep(0.5)
+            await client.send_document(STICKER_BOT, file_path, force_document=True)
+            await asyncio.sleep(1)
+            await client.send_message(STICKER_BOT, emoji)
+            await asyncio.sleep(0.5)
+            await client.send_message(STICKER_BOT, "/publish")
+            await asyncio.sleep(0.5)
+            await client.send_message(STICKER_BOT, "/skip")
+            await asyncio.sleep(0.5)
+            await client.send_message(STICKER_BOT, pack_name)
+        else:
+            await client.send_document(STICKER_BOT, file_path, force_document=True)
+            await asyncio.sleep(1)
+            await client.send_message(STICKER_BOT, emoji)
+            await asyncio.sleep(0.5)
+            await client.send_message(STICKER_BOT, "/done")
+            
+        await status.edit(f"<b>Sticker Kanged!</b>\n<a href='t.me/addstickers/{pack_name}'>View Pack</a>")
+        
+    except Exception as e:
+        await status.edit(f"Error: {e}")
     finally:
-        # Cleanup
         if os.path.exists(file_path): os.remove(file_path)
-        if final_file != file_path and os.path.exists(final_file): os.remove(final_file)
-
-    # 6. Success Message (Ultroid Style)
-    await status.edit(f"<b>Sticker Kanged!</b>\n<a href='t.me/addstickers/{pack_name}'>View Pack</a>")
+        if os.path.exists("sticker.png"): os.remove("sticker.png")
