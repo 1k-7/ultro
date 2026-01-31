@@ -1,0 +1,8 @@
+pyroblack
+tgcrypto
+python-dotenv
+motor
+redis
+requests
+Pillow
+yt-dlp
