@@ -6,3 +6,4 @@ redis
 requests
 Pillow
 yt-dlp
+aiohttp

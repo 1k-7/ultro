@@ -9,19 +9,33 @@ from pyrogram.types import Message
 from config import Config
 
 # --- CONSTANTS ---
-# Get Handlers from Config or default to [".", "!"]
 HANDLER = Config.HANDLER if hasattr(Config, "HANDLER") else [".", "!"]
-SUDO_USERS = Config.SUDO_USERS if hasattr(Config, "SUDO_USERS") else []
+
+def clean_sudo_list(sudo_list):
+    clean = []
+    if not sudo_list: return clean
+    for x in sudo_list:
+        try:
+            clean.append(int(x))
+        except ValueError:
+            continue
+    return clean
+
+SUDO_USERS = clean_sudo_list(Config.SUDO_USERS) if hasattr(Config, "SUDO_USERS") else []
 
 # --- DECORATOR ---
 def ultroid_cmd(pattern: str, full_sudo=False, only_devs=False, **kwargs):
     def func(flt, _, message):
         user = message.from_user
-        if not user: return False # Ignore channels/anon admins for commands
+        if not user: return False 
         
         if user.is_self: return True
         if only_devs: return False 
-        if full_sudo and user.id in SUDO_USERS: return True
+        
+        # Sudo Check
+        if user.id in SUDO_USERS: 
+            return True
+            
         return False
 
     auth_filter = filters.create(func)
@@ -29,8 +43,10 @@ def ultroid_cmd(pattern: str, full_sudo=False, only_devs=False, **kwargs):
 
 # --- MESSAGING ---
 async def eor(message: Message, text: str, time: int = None, **kwargs):
-    kwargs.setdefault("parse_mode", enums.ParseMode.HTML)
+    # Default to MARKDOWN to fix broken formatting
+    kwargs.setdefault("parse_mode", enums.ParseMode.MARKDOWN)
     kwargs.setdefault("disable_web_page_preview", True)
+    
     sent_msg = None
     try:
         if message.from_user and message.from_user.is_self:
@@ -38,8 +54,15 @@ async def eor(message: Message, text: str, time: int = None, **kwargs):
         else:
             sent_msg = await message.reply_text(text, **kwargs)
     except Exception:
-        try: sent_msg = await message.reply_text(text, **kwargs)
-        except: pass
+        # Fallback if Markdown fails (e.g. unclosed tags)
+        try:
+            kwargs["parse_mode"] = enums.ParseMode.DISABLED
+            if message.from_user and message.from_user.is_self:
+                sent_msg = await message.edit_text(text, **kwargs)
+            else:
+                sent_msg = await message.reply_text(text, **kwargs)
+        except:
+            pass
 
     if time and sent_msg:
         await asyncio.sleep(time)
@@ -49,25 +72,16 @@ async def eor(message: Message, text: str, time: int = None, **kwargs):
 
 # --- ADMIN HELPERS ---
 async def get_user_id(message: Message):
-    """
-    Extracts User ID from Reply, Mention, or Argument.
-    """
-    # 1. Reply
     if message.reply_to_message:
-        # Handle Anonymous Admins (Sender Chat)
         if message.reply_to_message.sender_chat:
             return message.reply_to_message.sender_chat.id
-        # Handle Real Users
         if message.reply_to_message.from_user:
             return message.reply_to_message.from_user.id
 
-    # 2. Argument (e.g., .ban @user)
     if len(message.command) > 1:
         arg = message.command[1]
-        # Numeric ID
         if arg.lstrip("-").isdigit(): 
             return int(arg)
-        # Username
         if arg.startswith("@"):
             try:
                 u = await message._client.get_users(arg)
@@ -76,7 +90,6 @@ async def get_user_id(message: Message):
     return None
 
 def ban_time(time_str: str) -> int:
-    """ Converts 1m/1h/1d to seconds. """
     if not time_str: return 0
     unit = time_str[-1].lower()
     if not unit.isalpha(): return int(time_str)
@@ -88,9 +101,8 @@ def ban_time(time_str: str) -> int:
     if unit == 'w': return val * 604800
     return 0
 
-# --- STICKER HELPER (Automation) ---
+# --- STICKER HELPER ---
 async def get_response(client, chat_id, timeout=5):
-    """ Waits for a response from a bot (like @Stickers). """
     async for message in client.get_chat_history(chat_id, limit=1):
         last_id = message.id
         break
